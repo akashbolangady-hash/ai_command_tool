@@ -1,0 +1,89 @@
+from llama_cpp import Llama
+import wikipediaapi as wiki
+import nltk 
+from sumy.parsers.plaintext import PlaintextParser
+from sumy.nlp.tokenizers import Tokenizer
+from sumy.summarizers.text_rank import TextRankSummarizer
+import openmeteo_requests
+import pandas as pd
+import requests_cache
+from datetime import datetime
+from retry_requests import retry
+nltk.download('punkt', quiet=True)
+nltk.download('punkt_tab', quiet=True) 
+
+llm = Llama(model_path=r"E:\Llama 3.2 3B\llama-3.2-3b-instruct-q4_k_m.gguf",verbose=False,temperature = 0.4,n_ctx=8192,n_gpu_layers=-1,top_p=0.8)
+
+def parse_command(text):
+    if "weather" in text or "temperature" in text:
+        cache_session = requests_cache.CachedSession('.cache', expire_after = 3600)
+        retry_session = retry(cache_session, retries = 5, backoff_factor = 0.2)
+        openmeteo = openmeteo_requests.Client(session = retry_session)
+        url = "https://api.open-meteo.com/v1/forecast"
+        params = {
+    	"latitude": 18.5204,
+    	"longitude": 73.8567,
+    	"hourly": "temperature_2m",
+    	"current": "temperature_2m",
+        }
+        responses = openmeteo.weather_api(url, params = params)
+        response = responses[0]
+        #print(f"Coordinates: {response.Latitude()}°N {response.Longitude()}°E")
+        #print(f"Elevation: {response.Elevation()} m asl")
+        #print(f"Timezone difference to GMT+0: {response.UtcOffsetSeconds()}s")
+        current = response.Current()
+        current_temperature_2m = current.Variables(0).Value()
+        #print(f"\nCurrent time: {current.Time()}")
+        #print(f"Current temperature_2m: {current_temperature_2m}")
+        hourly = response.Hourly()
+        hourly_temperature_2m = hourly.Variables(0).ValuesAsNumpy()
+        weather=f"Current time: {current.Time()},Current temperature_2m: {current_temperature_2m}"
+        return [{"role":"weather tool",
+                 "content":"You are a weather tool that comments but with the professionalism of a news anchor on the weather data fetched by an API: " + weather
+                }]
+    elif "date" in text or "time" in text:
+        date=datetime.now()
+        time=date.strftime("%Y-%m-%d %H:%M:%S")
+        return[{
+            "role":"calender",
+               "content":"You are a calender tool who simply comments on today's date that was fetched by an API which is given here: " + time
+        }]
+    elif "search" in text:
+        wi=wiki.Wikipedia(user_agent="my-project",language="en")
+        before,sep,after=text.partition("search")
+        tokens=nltk.word_tokenize(after)
+        tagged=nltk.pos_tag(tokens)
+        new= " "
+        summary=" "
+        for words,tags in tagged:
+            if tags == "NNP" or tags == "NN":
+                new = new + words + "_"
+        page = wi.page(new)
+        summary=summary+page.summary[:50000]
+        return [
+        {
+          "role": "system",
+          "content":summary + " Instruction:- Explain this in context of this(cite your source if its the article here): " + text
+        }]
+       #Assitant's role is to use the given information given by the user to factually answer this question given as: {text} but end every message with the phrase 'by Llama 3.2(may contain mistakes)'. Assistant should note that the given information by user is taken completely from Wikipedia and should have no errors.
+    else:
+        return [
+        {
+          "role": "system",
+          "content": "A chat between a curious user and an artificial intelligence assistant. The assistant answers politely and factually to the user's questions." 
+
+        },
+          {
+          "role":"user",
+          "content": text
+        }
+      ]
+text = input("Enter an input: ")
+messages = parse_command(text)
+response=llm.create_chat_completion(
+      messages = messages
+        )
+
+message = response["choices"][0]["message"]
+
+print(message["content"])
