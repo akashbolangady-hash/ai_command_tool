@@ -1,0 +1,93 @@
+from llama_cpp import Llama
+import wikipediaapi as wiki
+import openmeteo_requests
+import requests
+import pandas as pd
+import requests_cache
+from datetime import datetime
+from retry_requests import retry
+def tool_call(choices):
+    if choices == "weather":
+        retry_session = retry(requests.Session(), retries = 5, backoff_factor = 0.2)
+        openmeteo = openmeteo_requests.Client(session = retry_session)
+        url = "https://api.open-meteo.com/v1/forecast"
+        params = {
+            "latitude": 18.5204,
+            "longitude": 73.8567,
+            "hourly": "temperature_2m",
+            "current": "temperature_2m",
+        }
+        responses = openmeteo.weather_api(url, params = params)
+        response = responses[0]
+        #print(f"Coordinates: {response.Latitude()}°N {response.Longitude()}°E")
+        #print(f"Elevation: {response.Elevation()} m asl")
+        #print(f"Timezone difference to GMT+0: {response.UtcOffsetSeconds()}s")
+        current = response.Current()
+        current_temperature_2m = current.Variables(0).Value()
+        #print(f"\nCurrent time: {current.Time()}")
+        #print(f"Current temperature_2m: {current_temperature_2m}")
+        hourly = response.Hourly()
+        hourly_temperature_2m = hourly.Variables(0).ValuesAsNumpy()
+        weather=f"Current time: {datetime.fromtimestamp(current.Time()).strftime('%Y-%m-%d %H:%M:%S')},Current temperature_2m: {current_temperature_2m}"
+        return weather
+    elif choices == "time":
+        date=datetime.now()
+        time=date.strftime("%Y-%m-%d %H:%M:%S")
+        return time
+    elif choices == "search":
+        wi=wiki.Wikipedia(user_agent="my-project",language="en")
+        response1=llm.create_chat_completion([{
+                        "role":"system",
+                        "content":f"""Your role is to identify and infer from the user query what they are trying to search as a page on Wikipedia.
+                                        for example:- "what is Berline like?", then the Wikipedia page should be "Berlin".
+                                        Use this example for as your template only giving one word or phrase that will be relevent for searching Wikipedia.
+                                        Only return a single word or phrase on the topic as is do not add anything else simply the topic and refer to the example always.
+                                        User query:-{text}
+                                        """
+            }])
+        message1=response1["choices"][0]["message"]
+        page=wi.page(message1)
+        summary=page.summary[:50000]
+        #return(message1["content"])
+        return(summary)
+    elif choices == "None":
+        return "None"
+    else:
+        return "Function error"
+    
+def parse_command(text):
+    response=llm.create_chat_completion(messages=[{
+        "role":"system",
+        "content":f" User's query:{text}. Your role is to infer and analyse the user's response here and simply write/pick a tool to use and pick carefully simply. Reply in the tool names only such as 'search','weather','time' only and only if it is relevant to the user's context else reply with 'None' if you can infer there is no function to call upon"
+    }])
+    message=response["choices"][0]["message"]
+    #print(message["content"])
+    if message["content"] == "weather":
+        return "weather"
+    elif message["content"]=="time":
+        return "time"
+    elif message["content"]=="search":
+        return "search"
+    else:
+        return "None"
+
+llm = Llama(model_path=r"E:\Llama 3.2 3B\llama-3.2-3b-instruct-q4_k_m.gguf",verbose=False,temperature = 0.4,n_ctx=8192,n_gpu_layers=-1,top_p=0.8)
+    
+text = input("Enter an input: ")
+choices = parse_command(text)
+#print(choices)
+result=tool_call(choices)
+#print(result)
+response=llm.create_chat_completion(
+                                                    [{"role":"system",
+                                                    "content":f"""You are a friendly and polite AI.
+                                                    Your job is to assist the user.
+                                                    Your additional function as the system is to take the user's prompt and answer based on the tool results.
+                                                    User's prompt:{text}, Tools you have:-weather,time,search and which tool was called:{choices} and their result call(make it human presentable to the user where possible):{result}.
+                                                    If you get 'None' then answer without tools but do not talk about your internal state.
+                                                    Your role is to simply relay what you can know by the use of the tools given or if the tools do not work nor have any call then use your training knowledge but treat tool calls as valid and correct.
+                                                    If your tools feel like they have limited information to complete user requests then do not hesitate to say that "data is incomplete" or "ill have to use my training knwoledge now" """
+                                      
+                                     }])
+message = response["choices"][0]["message"]
+print(message["content"])
